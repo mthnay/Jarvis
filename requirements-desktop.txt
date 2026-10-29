@@ -1,0 +1,5 @@
+# Original macOS desktop application dependencies.
+# Render uses requirements.txt instead, because it has no local microphone/audio device.
+-r requirements.txt
+SpeechRecognition
+pyaudio

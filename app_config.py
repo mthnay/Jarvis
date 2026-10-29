@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 
@@ -44,6 +45,13 @@ def save_app_config(updates: dict) -> dict:
 
 
 def get_app_config_value(key: str, default=None):
+    env_key = {
+        "gemini_api_key": "GEMINI_API_KEY",
+        "youtube_api_key": "YOUTUBE_API_KEY",
+        "youtube_channel_handle": "YOUTUBE_CHANNEL_HANDLE",
+    }.get(key)
+    if env_key and os.environ.get(env_key, "").strip():
+        return os.environ[env_key].strip()
     return load_app_config().get(key, default)
 
 

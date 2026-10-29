@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#061313">
+  <title>JARVIS</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="shell">
+    <header><span class="dot"></span><div><strong>J.A.R.V.I.S</strong><small id="status">Bağlanıyor</small></div></header>
+    <section id="messages" aria-live="polite" aria-label="Konuşma geçmişi">
+      <article class="message assistant">Merhaba. Ben web tabanlı JARVIS. Yazabilir veya mikrofon düğmesini kullanabilirsin.</article>
+    </section>
+    <form id="composer">
+      <button id="mic" type="button" aria-label="Sesli konuş">🎙</button>
+      <input id="message" autocomplete="off" placeholder="JARVIS'e bir şey sor..." aria-label="Mesaj" maxlength="8000">
+      <button id="send" type="submit">Gönder</button>
+    </form>
+    <p class="hint">Mikrofon izni tarayıcın tarafından istenir. API anahtarın cihazına gönderilmez.</p>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

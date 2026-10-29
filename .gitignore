@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.env
+config/api_keys.json
+memory/memory.json
+memory/phone_book.json
+.DS_Store
