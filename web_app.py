@@ -207,16 +207,12 @@ async def forward_live_responses(session: Any, websocket: WebSocket, session_mem
     transcript: list[str] = []
     async for response in session.receive():
         server_content = getattr(response, "server_content", None)
-        audio_chunks: list[bytes] = []
+        # LiveServerMessage.data already concatenates every inline audio part
+        # in server_content. Forwarding both it and model_turn.parts duplicates
+        # every PCM frame, which produces overlapping, crackly speech.
         direct_data = getattr(response, "data", None)
-        if direct_data:
-            audio_chunks.append(bytes(direct_data))
+        audio_chunk = bytes(direct_data) if direct_data else None
         if server_content:
-            model_turn = getattr(server_content, "model_turn", None)
-            for part in (getattr(model_turn, "parts", None) or []):
-                inline_data = getattr(part, "inline_data", None)
-                if inline_data and getattr(inline_data, "data", None):
-                    audio_chunks.append(bytes(inline_data.data))
             output = getattr(server_content, "output_transcription", None)
             if output and getattr(output, "text", None):
                 transcript.append(output.text)
@@ -230,10 +226,10 @@ async def forward_live_responses(session: Any, websocket: WebSocket, session_mem
                 transcript.clear()
                 await websocket.send_json({"type": "turn_complete"})
 
-        for chunk in audio_chunks:
+        if audio_chunk:
             await websocket.send_json({
                 "type": "audio",
-                "data": base64.b64encode(chunk).decode("ascii"),
+                "data": base64.b64encode(audio_chunk).decode("ascii"),
                 "sample_rate": 24000,
             })
 
