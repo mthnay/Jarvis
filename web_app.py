@@ -8,6 +8,8 @@ Gemini key to the client.
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextlib
 import datetime as dt
 import logging
 import os
@@ -25,7 +27,8 @@ from actions.youtube_stats import get_youtube_channel_report
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL = os.environ.get("GEMINI_MODEL", "models/gemini-2.5-flash-native-audio-latest")
+VOICE = os.environ.get("JARVIS_VOICE", "Charon")
 MAX_HISTORY = 16
 
 app = FastAPI(title="JARVIS Web", docs_url=None, redoc_url=None)
@@ -183,6 +186,67 @@ async def answer(message: str, history: list[types.Content], session_memory: dic
     return "İşlemi tamamlamak için çok fazla araç çağrısı oluştu. Lütfen isteğini yeniden ifade et.", contents[-MAX_HISTORY:]
 
 
+def live_config(session_memory: dict[str, dict[str, str]]) -> types.LiveConnectConfig:
+    """Use the same native-audio Gemini Live path as the desktop app."""
+    return types.LiveConnectConfig(
+        response_modalities=["AUDIO"],
+        output_audio_transcription={},
+        input_audio_transcription={},
+        system_instruction=system_instruction(session_memory),
+        tools=TOOLS,
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE)
+            )
+        ),
+    )
+
+
+async def forward_live_responses(session: Any, websocket: WebSocket, session_memory: dict[str, dict[str, str]]) -> None:
+    """Forward Gemini's 24 kHz PCM stream and transcript to the browser."""
+    transcript: list[str] = []
+    async for response in session.receive():
+        server_content = getattr(response, "server_content", None)
+        audio_chunks: list[bytes] = []
+        direct_data = getattr(response, "data", None)
+        if direct_data:
+            audio_chunks.append(bytes(direct_data))
+        if server_content:
+            model_turn = getattr(server_content, "model_turn", None)
+            for part in (getattr(model_turn, "parts", None) or []):
+                inline_data = getattr(part, "inline_data", None)
+                if inline_data and getattr(inline_data, "data", None):
+                    audio_chunks.append(bytes(inline_data.data))
+            output = getattr(server_content, "output_transcription", None)
+            if output and getattr(output, "text", None):
+                transcript.append(output.text)
+            if getattr(server_content, "interrupted", False):
+                transcript.clear()
+                await websocket.send_json({"type": "interrupt"})
+            if getattr(server_content, "turn_complete", False):
+                text = "".join(transcript).strip()
+                if text:
+                    await websocket.send_json({"type": "reply", "message": text})
+                transcript.clear()
+                await websocket.send_json({"type": "turn_complete"})
+
+        for chunk in audio_chunks:
+            await websocket.send_json({
+                "type": "audio",
+                "data": base64.b64encode(chunk).decode("ascii"),
+                "sample_rate": 24000,
+            })
+
+        tool_call = getattr(response, "tool_call", None)
+        function_calls = getattr(tool_call, "function_calls", None) or []
+        if function_calls:
+            responses = []
+            for call in function_calls:
+                result = await run_tool(call.name, dict(call.args or {}), session_memory)
+                responses.append(types.FunctionResponse(id=call.id, name=call.name, response={"result": result}))
+            await session.send_tool_response(function_responses=responses)
+
+
 @app.get("/", include_in_schema=False)
 async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
@@ -190,32 +254,43 @@ async def index() -> FileResponse:
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "model": MODEL}
+    return {"status": "ok", "model": MODEL, "voice": VOICE}
 
 
 @app.websocket("/ws")
 async def chat(websocket: WebSocket) -> None:
     await websocket.accept()
-    history: list[types.Content] = []
     session_memory: dict[str, dict[str, str]] = {}
+    key = api_key()
+    if not key:
+        await websocket.send_json({"type": "error", "message": "JARVIS yapılandırılmamış: Render Environment bölümünde GEMINI_API_KEY ekleyin."})
+        await websocket.close()
+        return
     try:
-        while True:
-            payload = await websocket.receive_json()
-            message = str(payload.get("message") or "").strip()
-            if not message:
-                continue
-            if len(message) > 8_000:
-                await websocket.send_json({"type": "error", "message": "Mesaj en fazla 8.000 karakter olabilir."})
-                continue
-            await websocket.send_json({"type": "status", "message": "Düşünüyorum..."})
+        client = genai.Client(api_key=key, http_options={"api_version": "v1alpha"})
+        async with client.aio.live.connect(model=MODEL, config=live_config(session_memory)) as session:
+            receiver = asyncio.create_task(forward_live_responses(session, websocket, session_memory))
             try:
-                reply, history = await answer(message, history, session_memory)
-                await websocket.send_json({"type": "reply", "message": reply})
-            except Exception as exc:
-                logger.exception("JARVIS request failed")
-                message = "JARVIS şu an yanıt veremiyor. API anahtarını ve servis günlüklerini kontrol edip yeniden deneyin."
-                if "GEMINI_API_KEY" in str(exc):
-                    message = "JARVIS yapılandırılmamış: Render Environment bölümünde GEMINI_API_KEY ekleyin."
-                await websocket.send_json({"type": "error", "message": message})
+                while True:
+                    payload = await websocket.receive_json()
+                    message = str(payload.get("message") or "").strip()
+                    if not message:
+                        continue
+                    if len(message) > 8_000:
+                        await websocket.send_json({"type": "error", "message": "Mesaj en fazla 8.000 karakter olabilir."})
+                        continue
+                    await websocket.send_json({"type": "status", "message": "Thinking"})
+                    await session.send_client_content(
+                        turns={"role": "user", "parts": [{"text": message}]},
+                        turn_complete=True,
+                    )
+            finally:
+                receiver.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await receiver
     except WebSocketDisconnect:
         return
+    except Exception:
+        logger.exception("JARVIS Live session failed")
+        with contextlib.suppress(Exception):
+            await websocket.send_json({"type": "error", "message": "JARVIS ses çekirdeğine bağlanamadı. Render günlüklerini kontrol edin."})

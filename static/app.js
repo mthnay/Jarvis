@@ -11,6 +11,9 @@ const conversationState = document.querySelector('#conversation-state');
 let socket;
 let recognition;
 let speechEnabled = true;
+let audioContext;
+let nextAudioTime = 0;
+const activeAudio = new Set();
 
 function add(text, kind) {
   const item = document.createElement('article');
@@ -39,7 +42,10 @@ function connect() {
     const event = JSON.parse(data);
     if (event.type === 'status') setStatus(event.message, true);
     if (event.type === 'error') { add(event.message, 'error'); setStatus('Hazır', true); }
-    if (event.type === 'reply') { add(event.message, 'assistant'); speak(event.message); setStatus('Hazır', true); }
+    if (event.type === 'audio') playPcm(event.data, event.sample_rate || 24000);
+    if (event.type === 'interrupt') stopAudio();
+    if (event.type === 'turn_complete') setStatus('Hazır', true);
+    if (event.type === 'reply') add(event.message, 'assistant');
   };
 }
 
@@ -53,12 +59,30 @@ function submit(text) {
 
 form.addEventListener('submit', (event) => { event.preventDefault(); submit(input.value); });
 
-function speak(text) {
-  if (!speechEnabled || !('speechSynthesis' in window)) return;
-  speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = 'tr-TR';
-  speechSynthesis.speak(utterance);
+function stopAudio() {
+  for (const source of activeAudio) source.stop();
+  activeAudio.clear();
+  nextAudioTime = 0;
+}
+
+function playPcm(encoded, sampleRate) {
+  if (!speechEnabled) return;
+  const raw = atob(encoded);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
+  const samples = new Int16Array(bytes.buffer);
+  audioContext ||= new AudioContext();
+  const buffer = audioContext.createBuffer(1, samples.length, sampleRate);
+  const channel = buffer.getChannelData(0);
+  for (let i = 0; i < samples.length; i += 1) channel[i] = samples[i] / 32768;
+  const source = audioContext.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioContext.destination);
+  const startAt = Math.max(audioContext.currentTime + 0.035, nextAudioTime);
+  source.start(startAt);
+  nextAudioTime = startAt + buffer.duration;
+  activeAudio.add(source);
+  source.onended = () => activeAudio.delete(source);
 }
 
 const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -73,14 +97,14 @@ if (!Recognition) {
   recognition.onend = () => { mic.classList.remove('listening'); orb.classList.remove('listening'); document.querySelector('#audio-state').textContent = 'STANDBY'; if (socket?.readyState === WebSocket.OPEN) setStatus('Hazır', true); };
   recognition.onerror = () => { mic.classList.remove('listening'); orb.classList.remove('listening'); document.querySelector('#audio-state').textContent = 'ERROR'; setStatus('Mikrofon kullanılamadı', true); };
   recognition.onresult = (event) => submit(event.results[0][0].transcript);
-  const startListening = () => { speechSynthesis.cancel(); recognition.start(); };
+  const startListening = () => { stopAudio(); recognition.start(); };
   mic.addEventListener('click', startListening);
   orb.addEventListener('click', startListening);
 }
 
 mute.addEventListener('click', () => {
   speechEnabled = !speechEnabled;
-  if (!speechEnabled && 'speechSynthesis' in window) speechSynthesis.cancel();
+  if (!speechEnabled) stopAudio();
   mute.textContent = `SPEECH: ${speechEnabled ? 'ON' : 'OFF'}`;
 });
 
