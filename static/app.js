@@ -13,6 +13,9 @@ let speechEnabled = true;
 let audioContext;
 let nextAudioTime = 0;
 const activeAudio = new Set();
+// Live PCM arrives in short WebSocket packets.  Keep a small lead over the
+// audio clock so normal network jitter does not become an audible gap.
+const PLAYBACK_LOOKAHEAD_SECONDS = 0.12;
 let microphoneStream;
 let captureContext;
 let captureNode;
@@ -74,15 +77,25 @@ function playPcm(encoded, sampleRate) {
   const raw = atob(encoded);
   const bytes = new Uint8Array(raw.length);
   for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
+  // 16-bit PCM must be aligned on sample boundaries. Ignore a malformed or
+  // empty frame instead of letting it corrupt the rest of playback.
+  if (bytes.byteLength < 2 || bytes.byteLength % 2 !== 0) return;
   const samples = new Int16Array(bytes.buffer);
   audioContext ||= new AudioContext();
+  if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
   const buffer = audioContext.createBuffer(1, samples.length, sampleRate);
   const channel = buffer.getChannelData(0);
   for (let i = 0; i < samples.length; i += 1) channel[i] = samples[i] / 32768;
   const source = audioContext.createBufferSource();
   source.buffer = buffer;
   source.connect(audioContext.destination);
-  const startAt = Math.max(audioContext.currentTime + 0.035, nextAudioTime);
+  // A 35 ms lead was shorter than common WebSocket scheduling jitter, causing
+  // every late packet to sound like a click or a dropped syllable.  Starting
+  // new/recovered streams 120 ms ahead preserves a continuous audio timeline.
+  const startAt = Math.max(
+    audioContext.currentTime + PLAYBACK_LOOKAHEAD_SECONDS,
+    nextAudioTime,
+  );
   source.start(startAt);
   nextAudioTime = startAt + buffer.duration;
   activeAudio.add(source);
