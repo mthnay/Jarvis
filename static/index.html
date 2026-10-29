@@ -1,25 +1,8 @@
 <!doctype html>
-<html lang="tr">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#061313">
-  <title>JARVIS</title>
-  <link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
-  <main class="shell">
-    <header><span class="dot"></span><div><strong>J.A.R.V.I.S</strong><small id="status">Bağlanıyor</small></div></header>
-    <section id="messages" aria-live="polite" aria-label="Konuşma geçmişi">
-      <article class="message assistant">Merhaba. Ben web tabanlı JARVIS. Yazabilir veya mikrofon düğmesini kullanabilirsin.</article>
-    </section>
-    <form id="composer">
-      <button id="mic" type="button" aria-label="Sesli konuş">🎙</button>
-      <input id="message" autocomplete="off" placeholder="JARVIS'e bir şey sor..." aria-label="Mesaj" maxlength="8000">
-      <button id="send" type="submit">Gönder</button>
-    </form>
-    <p class="hint">Mikrofon izni tarayıcın tarafından istenir. API anahtarın cihazına gönderilmez.</p>
-  </main>
-  <script src="/static/app.js"></script>
-</body>
-</html>
+<html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#020c0c"><title>J.A.R.V.I.S</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><main class="hud-shell">
+<header class="topbar"><span class="edition">VOICE CORE · WEB EDITION</span><div class="brand"><strong>J.A.R.V.I.S</strong><small>Just A Rather Very Intelligent System</small></div><span class="connection"><i class="dot"></i><span id="status">Bağlanıyor</span></span></header>
+<aside class="left-panel"><button class="system-settings" type="button"><span>SYSTEM SETTINGS</span><small>VOICE CORE · WEB EDITION</small><b>›</b></button><section class="data-card time-card"><h2>TIME</h2><time id="clock">--:--</time><span id="seconds">:--</span><p id="date">--</p><p id="day">--</p></section><section class="data-card weather-card"><h2>WEATHER · ISTANBUL</h2><strong>WEB CORE</strong><p>Hava durumu için JARVIS’e sor.</p></section><section class="data-card system-card"><h2>SYSTEM STATUS</h2><p><span>PLATFORM</span><b>BROWSER</b></p><p><span>AUDIO</span><b id="audio-state">STANDBY</b></p><p><span>VOICE</span><b>tr-TR</b></p></section><div class="creator">Alp<br><b>Ünlü</b></div></aside>
+<section class="core-panel"><div class="core-grid"></div><button class="orb-wrap" id="orb" type="button" aria-label="JARVIS mikrofonu"><i class="orb-ring ring-1"></i><i class="orb-ring ring-2"></i><i class="orb-ring ring-3"></i><i class="orb-glow"></i><i class="orb-core"></i></button><div class="core-label"><strong>J.A.R.V.I.S</strong><span id="core-status">● Listening</span></div><div class="core-controls"><button id="mic" type="button">◉ &nbsp; VOICE INPUT</button><span>Tarayıcı mikrofon izni gerekir</span><button id="mute" type="button">SPEECH: ON</button></div></section>
+<section class="conversation-panel"><header><strong>CONVERSATION</strong><span id="conversation-state">● ONLINE</span></header><section id="messages" aria-live="polite" aria-label="Konuşma geçmişi"><article class="message assistant"><b>JARVIS</b>Web ses çekirdeği hazır. Nasıl yardımcı olabilirim?</article></section><form id="composer"><input id="message" autocomplete="off" placeholder="Komut girin..." aria-label="Mesaj" maxlength="8000"><button id="send" type="submit">SEND</button></form></section>
+<footer>JARVIS · WEB EDITION · REALTIME VOICE CORE <span>2026</span></footer></main><script src="/static/app.js"></script></body></html>
