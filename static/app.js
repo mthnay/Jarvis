@@ -9,11 +9,15 @@ const mute = document.querySelector('#mute');
 const coreStatus = document.querySelector('#core-status');
 const conversationState = document.querySelector('#conversation-state');
 let socket;
-let recognition;
 let speechEnabled = true;
 let audioContext;
 let nextAudioTime = 0;
 const activeAudio = new Set();
+let microphoneStream;
+let captureContext;
+let captureNode;
+let captureSource;
+let microphoneActive = false;
 
 function add(text, kind) {
   const item = document.createElement('article');
@@ -35,7 +39,7 @@ function setStatus(text, online = false) {
 function connect() {
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
   socket = new WebSocket(`${protocol}://${location.host}/ws`);
-  socket.onopen = () => setStatus('Hazır', true);
+  socket.onopen = () => { setStatus('Hazır', true); startMicrophone(); };
   socket.onclose = () => { setStatus('Bağlantı kesildi'); setTimeout(connect, 1500); };
   socket.onerror = () => setStatus('Bağlantı hatası');
   socket.onmessage = ({ data }) => {
@@ -85,22 +89,87 @@ function playPcm(encoded, sampleRate) {
   source.onended = () => activeAudio.delete(source);
 }
 
-const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-if (!Recognition) {
-  mic.disabled = true;
-  mic.title = 'Tarayıcın sesli girişi desteklemiyor.';
-} else {
-  recognition = new Recognition();
-  recognition.lang = 'tr-TR';
-  recognition.interimResults = false;
-  recognition.onstart = () => { mic.classList.add('listening'); orb.classList.add('listening'); document.querySelector('#audio-state').textContent = 'LISTENING'; setStatus('Listening', true); };
-  recognition.onend = () => { mic.classList.remove('listening'); orb.classList.remove('listening'); document.querySelector('#audio-state').textContent = 'STANDBY'; if (socket?.readyState === WebSocket.OPEN) setStatus('Hazır', true); };
-  recognition.onerror = () => { mic.classList.remove('listening'); orb.classList.remove('listening'); document.querySelector('#audio-state').textContent = 'ERROR'; setStatus('Mikrofon kullanılamadı', true); };
-  recognition.onresult = (event) => submit(event.results[0][0].transcript);
-  const startListening = () => { stopAudio(); recognition.start(); };
-  mic.addEventListener('click', startListening);
-  orb.addEventListener('click', startListening);
+function toBase64(bytes) {
+  let binary = '';
+  const step = 8192;
+  for (let offset = 0; offset < bytes.length; offset += step) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + step));
+  }
+  return btoa(binary);
 }
+
+function downsample(input, inputRate) {
+  if (inputRate === 16000) return input;
+  const ratio = inputRate / 16000;
+  const output = new Float32Array(Math.round(input.length / ratio));
+  for (let i = 0; i < output.length; i += 1) {
+    const start = Math.floor(i * ratio);
+    const end = Math.min(Math.floor((i + 1) * ratio), input.length);
+    let total = 0;
+    for (let j = start; j < end; j += 1) total += input[j];
+    output[i] = total / Math.max(1, end - start);
+  }
+  return output;
+}
+
+function sendMicrophoneFrame(floatSamples, sampleRate) {
+  if (!microphoneActive || socket?.readyState !== WebSocket.OPEN) return;
+  const samples = downsample(floatSamples, sampleRate);
+  const pcm = new Int16Array(samples.length);
+  for (let i = 0; i < samples.length; i += 1) {
+    const sample = Math.max(-1, Math.min(1, samples[i]));
+    pcm[i] = sample < 0 ? sample * 32768 : sample * 32767;
+  }
+  socket.send(JSON.stringify({ type: 'audio', data: toBase64(new Uint8Array(pcm.buffer)) }));
+}
+
+async function startMicrophone() {
+  if (microphoneActive) return;
+  if (!navigator.mediaDevices?.getUserMedia) {
+    setStatus('Tarayıcı mikrofonu desteklemiyor', true);
+    return;
+  }
+  try {
+    microphoneStream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+    captureContext = new AudioContext();
+    captureSource = captureContext.createMediaStreamSource(microphoneStream);
+    captureNode = captureContext.createScriptProcessor(2048, 1, 1);
+    const silentOutput = captureContext.createGain();
+    silentOutput.gain.value = 0;
+    captureNode.onaudioprocess = (event) => sendMicrophoneFrame(event.inputBuffer.getChannelData(0), captureContext.sampleRate);
+    captureSource.connect(captureNode);
+    captureNode.connect(silentOutput);
+    silentOutput.connect(captureContext.destination);
+    microphoneActive = true;
+    mic.classList.add('listening');
+    orb.classList.add('listening');
+    document.querySelector('#audio-state').textContent = 'LISTENING';
+    setStatus('Listening', true);
+  } catch (error) {
+    document.querySelector('#audio-state').textContent = 'MIC DENIED';
+    setStatus('Mikrofon izni gerekli', true);
+  }
+}
+
+function stopMicrophone() {
+  if (!microphoneActive) return;
+  microphoneActive = false;
+  socket?.send(JSON.stringify({ type: 'audio_end' }));
+  microphoneStream?.getTracks().forEach((track) => track.stop());
+  captureNode?.disconnect();
+  captureSource?.disconnect();
+  captureContext?.close();
+  mic.classList.remove('listening');
+  orb.classList.remove('listening');
+  document.querySelector('#audio-state').textContent = 'STANDBY';
+  setStatus('Hazır', true);
+}
+
+function toggleMicrophone() { if (microphoneActive) stopMicrophone(); else startMicrophone(); }
+mic.addEventListener('click', toggleMicrophone);
+orb.addEventListener('click', toggleMicrophone);
 
 mute.addEventListener('click', () => {
   speechEnabled = !speechEnabled;

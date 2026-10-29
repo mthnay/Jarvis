@@ -273,6 +273,19 @@ async def chat(websocket: WebSocket) -> None:
             try:
                 while True:
                     payload = await websocket.receive_json()
+                    if payload.get("type") == "audio":
+                        try:
+                            audio = base64.b64decode(str(payload.get("data") or ""), validate=True)
+                        except ValueError:
+                            continue
+                        if audio:
+                            await session.send_realtime_input(
+                                audio=types.Blob(data=audio, mime_type="audio/pcm;rate=16000")
+                            )
+                        continue
+                    if payload.get("type") == "audio_end":
+                        await session.send_realtime_input(audio_stream_end=True)
+                        continue
                     message = str(payload.get("message") or "").strip()
                     if not message:
                         continue
