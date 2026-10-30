@@ -13,12 +13,14 @@ import contextlib
 import datetime as dt
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+import psutil
 from google import genai
 from google.genai import types
 
@@ -30,12 +32,20 @@ STATIC_DIR = BASE_DIR / "static"
 MODEL = os.environ.get("GEMINI_MODEL", "models/gemini-2.5-flash-native-audio-latest")
 VOICE = os.environ.get("JARVIS_VOICE", "Charon")
 MAX_HISTORY = 16
+VOICES = ["Charon", "Puck", "Aoede", "Kore", "Fenrir", "Leda", "Orus", "Zephyr"]
+WEATHER_TTL = 30 * 60
 # Gemini Live drops connections periodically (≈10 min lifetime, GoAway,
 # transient 1011s).  Retry this many times in a row before telling the user.
 MAX_LIVE_RETRIES = 4
 
 app = FastAPI(title="JARVIS Web", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+# The desktop HUD's fonts, icons and sound effects, shared with the web HUD.
+app.mount("/fonts", StaticFiles(directory=BASE_DIR / "Fonts"), name="fonts")
+app.mount("/icons", StaticFiles(directory=BASE_DIR / "Icon"), name="icons")
+app.mount("/sfx", StaticFiles(directory=BASE_DIR / "SFX"), name="sfx")
+_weather_cache: dict[str, Any] = {"at": 0.0, "text": ""}
+_last_net: dict[str, Any] = {"at": time.time(), "io": psutil.net_io_counters()}
 logger = logging.getLogger("jarvis.web")
 
 
@@ -198,7 +208,7 @@ async def answer(message: str, history: list[types.Content], session_memory: dic
     return "İşlemi tamamlamak için çok fazla araç çağrısı oluştu. Lütfen isteğini yeniden ifade et.", contents[-MAX_HISTORY:]
 
 
-def live_config(session_memory: dict[str, dict[str, str]], resume_handle: str | None = None) -> types.LiveConnectConfig:
+def live_config(session_memory: dict[str, dict[str, str]], resume_handle: str | None = None, voice: str = VOICE) -> types.LiveConnectConfig:
     """Use the same native-audio Gemini Live path as the desktop app."""
     return types.LiveConnectConfig(
         response_modalities=["AUDIO"],
@@ -208,7 +218,7 @@ def live_config(session_memory: dict[str, dict[str, str]], resume_handle: str | 
         tools=TOOLS,
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
-                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE)
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice)
             )
         ),
         # The browser streams microphone audio nonstop, so without compression
@@ -226,6 +236,7 @@ async def forward_live_responses(session: Any, websocket: WebSocket, session_mem
     caller can reconnect with the latest resumption handle.
     """
     transcript: list[str] = []
+    heard: list[str] = []
     # session.receive() stops after every turn_complete; without the outer
     # loop JARVIS goes silent after its first answer.
     while True:
@@ -246,10 +257,18 @@ async def forward_live_responses(session: Any, websocket: WebSocket, session_mem
                 output = getattr(server_content, "output_transcription", None)
                 if output and getattr(output, "text", None):
                     transcript.append(output.text)
+                spoken = getattr(server_content, "input_transcription", None)
+                if spoken and getattr(spoken, "text", None):
+                    heard.append(spoken.text)
+                    await websocket.send_json({"type": "hearing"})
                 if getattr(server_content, "interrupted", False):
                     transcript.clear()
                     await websocket.send_json({"type": "interrupt"})
                 if getattr(server_content, "turn_complete", False):
+                    said = " ".join("".join(heard).split())
+                    if said:
+                        await websocket.send_json({"type": "user_transcript", "message": said})
+                    heard.clear()
                     text = "".join(transcript).strip()
                     if text:
                         await websocket.send_json({"type": "reply", "message": text})
@@ -268,6 +287,7 @@ async def forward_live_responses(session: Any, websocket: WebSocket, session_mem
             if function_calls:
                 responses = []
                 for call in function_calls:
+                    await websocket.send_json({"type": "tool", "name": call.name})
                     result = await run_tool(call.name, dict(call.args or {}), session_memory)
                     responses.append(types.FunctionResponse(id=call.id, name=call.name, response={"result": result}))
                 await session.send_tool_response(function_responses=responses)
@@ -325,6 +345,44 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "model": MODEL, "voice": VOICE}
 
 
+def _system_stats() -> dict[str, float]:
+    now = time.time()
+    net = psutil.net_io_counters()
+    elapsed = max(now - _last_net["at"], 1e-3)
+    up = max(0.0, (net.bytes_sent - _last_net["io"].bytes_sent) / elapsed / 1024)
+    down = max(0.0, (net.bytes_recv - _last_net["io"].bytes_recv) / elapsed / 1024)
+    _last_net.update(at=now, io=net)
+    battery = psutil.sensors_battery()
+    return {
+        "cpu": psutil.cpu_percent(),
+        "ram": psutil.virtual_memory().percent,
+        "disk": psutil.disk_usage("/").percent,
+        "battery": battery.percent if battery else 100.0,
+        "net_up": up,
+        "net_down": down,
+    }
+
+
+@app.get("/api/brief")
+async def brief() -> dict[str, Any]:
+    """Data for the HUD's left cards: weather (cached) and host stats."""
+    if time.time() - _weather_cache["at"] > WEATHER_TTL or not _weather_cache["text"]:
+        try:
+            _weather_cache["text"] = await asyncio.to_thread(get_weather_summary, "Istanbul")
+        except Exception:
+            _weather_cache["text"] = ""
+        _weather_cache["at"] = time.time()
+    return {
+        "weather": _weather_cache["text"],
+        "stats": await asyncio.to_thread(_system_stats),
+        "gemini": bool(api_key()),
+        "youtube": bool(os.environ.get("YOUTUBE_API_KEY", "").strip()),
+        "youtube_handle": os.environ.get("YOUTUBE_CHANNEL_HANDLE", "").strip(),
+        "voices": VOICES,
+        "voice": VOICE,
+    }
+
+
 @app.websocket("/ws")
 async def chat(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -335,6 +393,8 @@ async def chat(websocket: WebSocket) -> None:
         await websocket.close()
         return
 
+    requested_voice = websocket.query_params.get("voice", "")
+    voice = requested_voice if requested_voice in VOICES else VOICE
     client = genai.Client(api_key=key, http_options={"api_version": "v1alpha"})
     state: dict[str, Any] = {"handle": None}
     inbox: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=256)
@@ -343,7 +403,7 @@ async def chat(websocket: WebSocket) -> None:
     try:
         while not browser.done() or not inbox.empty():
             try:
-                async with client.aio.live.connect(model=MODEL, config=live_config(session_memory, state["handle"])) as session:
+                async with client.aio.live.connect(model=MODEL, config=live_config(session_memory, state["handle"], voice)) as session:
                     failures = 0
                     receiver = asyncio.create_task(forward_live_responses(session, websocket, session_memory, state))
                     sender = asyncio.create_task(forward_browser_messages(session, websocket, inbox))

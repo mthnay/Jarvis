@@ -1,8 +1,61 @@
 <!doctype html>
-<html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#020c0c"><title>J.A.R.V.I.S</title><link rel="stylesheet" href="/static/style.css"></head>
-<body><main class="hud-shell">
-<header class="topbar"><span class="edition">VOICE CORE · WEB EDITION</span><div class="brand"><strong>J.A.R.V.I.S</strong><small>Just A Rather Very Intelligent System</small></div><span class="connection"><i class="dot"></i><span id="status">Bağlanıyor</span></span></header>
-<aside class="left-panel"><button class="system-settings" type="button"><span>SYSTEM SETTINGS</span><small>VOICE CORE · WEB EDITION</small><b>›</b></button><section class="data-card time-card"><h2>TIME</h2><time id="clock">--:--</time><span id="seconds">:--</span><p id="date">--</p><p id="day">--</p></section><section class="data-card weather-card"><h2>WEATHER · ISTANBUL</h2><strong>WEB CORE</strong><p>Hava durumu için JARVIS’e sor.</p></section><section class="data-card system-card"><h2>SYSTEM STATUS</h2><p><span>PLATFORM</span><b>BROWSER</b></p><p><span>AUDIO</span><b id="audio-state">STANDBY</b></p><p><span>VOICE</span><b>tr-TR</b></p></section></aside>
-<section class="core-panel"><div class="core-grid"></div><button class="orb-wrap" id="orb" type="button" aria-label="JARVIS mikrofonu"><i class="orb-ring ring-1"></i><i class="orb-ring ring-2"></i><i class="orb-ring ring-3"></i><i class="orb-glow"></i><i class="orb-core"></i></button><div class="core-label"><strong>J.A.R.V.I.S</strong><span id="core-status">● Listening</span></div><div class="core-controls"><button id="mic" type="button">◉ &nbsp; VOICE INPUT</button><span>Tarayıcı mikrofon izni gerekir</span><button id="mute" type="button">SPEECH: ON</button></div></section>
-<section class="conversation-panel"><header><strong>CONVERSATION</strong><span id="conversation-state">● ONLINE</span></header><section id="messages" aria-live="polite" aria-label="Konuşma geçmişi"><article class="message assistant"><b>JARVIS</b>Web ses çekirdeği hazır. Nasıl yardımcı olabilirim?</article></section><form id="composer"><input id="message" autocomplete="off" placeholder="Komut girin..." aria-label="Mesaj" maxlength="8000"><button id="send" type="submit">SEND</button></form></section>
-<footer>JARVIS · WEB EDITION · REALTIME VOICE CORE <span>2026</span></footer></main><script src="/static/app.js"></script></body></html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#020c0c">
+<title>J.A.R.V.I.S</title>
+<link rel="preload" href="/fonts/Grift-ExtraBold.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="preload" href="/fonts/Grift-Regular.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<!-- Same layout as the desktop HUD (ui.py): one canvas for everything drawn,
+     HTML widgets placed on top at the desktop's coordinates. -->
+<canvas id="hud" aria-hidden="true"></canvas>
+
+<button id="settings-btn" class="hud-widget bracket" type="button" aria-expanded="false" aria-controls="settings-panel">
+  <span class="settings-title">SYSTEM SETTINGS</span>
+  <span class="settings-badge">VOICE CORE · WEB</span>
+  <span class="settings-arrow">▸</span>
+</button>
+
+<section id="settings-panel" class="hud-widget" hidden aria-label="Ayarlar">
+  <h2>SETTINGS</h2>
+  <div class="tabs" role="tablist">
+    <button id="tab-settings" class="tab bracket active" type="button" role="tab" aria-selected="true">SETTINGS</button>
+    <button id="tab-debug" class="tab bracket" type="button" role="tab" aria-selected="false">DEBUG</button>
+  </div>
+  <div id="settings-body" class="settings-body">
+    <button id="api-btn" class="bracket" type="button">⌘ API SETTINGS</button>
+    <button id="sfx-btn" class="bracket" type="button">♪ SFX ON</button>
+    <p id="status-primary" class="status-primary">Gemini kontrol ediliyor</p>
+    <p id="status-secondary" class="status-secondary">Kanal: --</p>
+    <span class="label sfx-label">SFX</span>
+    <label for="fx-level" id="fx-label" class="fx-label">FX LEVEL  20%</label>
+    <input id="fx-level" type="range" min="0" max="100" value="20">
+    <label for="voice" class="label voice-label">VOICE</label>
+    <select id="voice"></select>
+  </div>
+  <div id="debug-body" class="debug-body" hidden></div>
+</section>
+
+<button id="mute" class="hud-widget bracket ctrl" type="button">🎙 LIVE</button>
+<button id="pause" class="hud-widget bracket ctrl" type="button">⏸ PAUSE</button>
+<button id="shutdown" class="hud-widget bracket ctrl" type="button">⏻  SHUTDOWN</button>
+
+<div id="log" class="hud-widget" role="log" aria-live="polite" aria-label="Konuşma geçmişi"></div>
+<form id="composer" class="hud-widget">
+  <input id="message" autocomplete="off" aria-label="Komut" maxlength="8000">
+  <button id="send" type="submit">SEND ▸</button>
+</form>
+
+<nav id="social" class="hud-widget" aria-label="Sosyal">
+  <a class="social-name" href="https://www.instagram.com/alppunlu" target="_blank" rel="noopener">Alp<br>Ünlü</a>
+  <a href="https://www.instagram.com/alppunlu" target="_blank" rel="noopener" aria-label="Instagram"><img src="/icons/instagram-logo.png" alt="" width="28" height="28"></a>
+  <a href="https://www.youtube.com/@alpunlu" target="_blank" rel="noopener" aria-label="YouTube"><img src="/icons/youtube-logo.png" alt="" width="28" height="28"></a>
+</nav>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
