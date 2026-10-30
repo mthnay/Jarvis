@@ -136,8 +136,6 @@ function placeWidgets() {
   place(muteBtn, startX, row1Y, muteW);
   place(pauseBtn, startX + muteW + gap, row1Y, pauseW);
   place(shutdownBtn, startX + muteW + pauseW + gap * 2, row1Y, shutdownW);
-  place($('#social'), 14, L.H - FOOTER_H - 52);
-  $('#social').hidden = L.compact;
   settingsPanel.style.width = `${Math.min(320, L.W - 28)}px`;
 }
 

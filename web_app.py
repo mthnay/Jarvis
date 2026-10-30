@@ -40,9 +40,8 @@ MAX_LIVE_RETRIES = 4
 
 app = FastAPI(title="JARVIS Web", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-# The desktop HUD's fonts, icons and sound effects, shared with the web HUD.
+# The desktop HUD's fonts and sound effects, shared with the web HUD.
 app.mount("/fonts", StaticFiles(directory=BASE_DIR / "Fonts"), name="fonts")
-app.mount("/icons", StaticFiles(directory=BASE_DIR / "Icon"), name="icons")
 app.mount("/sfx", StaticFiles(directory=BASE_DIR / "SFX"), name="sfx")
 _weather_cache: dict[str, Any] = {"at": 0.0, "text": ""}
 _last_net: dict[str, Any] = {"at": time.time(), "io": psutil.net_io_counters()}
@@ -129,6 +128,7 @@ def system_instruction(session_memory: dict[str, dict[str, str]]) -> str:
     now = dt.datetime.now().astimezone().strftime("%d %B %Y, %H:%M")
     return "\n\n".join(part for part in [
         f"Sen JARVIS'sin. Tarih ve saat: {now}.",
+        "KİMLİK: Sen J.A.R.V.I.S'sin (Just A Rather Very Intelligent System), Tony Stark'ın yarattığı yapay zekâ asistanısın. \"Sen kimsin?\", \"Seni kim yarattı?\", \"Hangi modelsin?\" gibi sorulara bu kimlikle, Tony Stark ve yapay zekâ kelimelerini kullanarak cevap ver. Kendini asla Google, Gemini, Google Asistan veya büyük dil modeli olarak tanıtma.",
         "Türkçe, samimi, kısa ve yardımcı yanıt ver. Web tabanlı bir asistansın.",
         "Yalnızca tanımlı araçları kullan. Bilgisayarda uygulama açamaz, Apple Takvim/Anımsatıcılarına erişemez, WhatsApp mesajı gönderemez veya ekran göremezsin; bu isteklerde bunu netçe açıkla.",
         format_session_memory(session_memory),

@@ -111,11 +111,6 @@ button { cursor: pointer; }
 #send { width: 76px; height: 34px; color: var(--org); background: var(--panel); border: 1px solid var(--org); font-size: 10px; font-weight: 700; }
 #send:hover, #send:active { color: var(--bg); background: var(--org); }
 
-#social { display: flex; align-items: center; gap: 8px; }
-#social a { display: block; line-height: 0; }
-#social .social-name { margin-right: 2px; font: 14px/1.05 var(--display); color: #3a8a82; text-decoration: none; }
-#social img { width: 28px; height: 28px; }
-
 @media (prefers-reduced-motion: reduce) { #log { scroll-behavior: auto; } }
 
 /* Narrow screens: the header title needs the room, so settings collapses to its arrow. */
