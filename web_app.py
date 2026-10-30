@@ -30,6 +30,9 @@ STATIC_DIR = BASE_DIR / "static"
 MODEL = os.environ.get("GEMINI_MODEL", "models/gemini-2.5-flash-native-audio-latest")
 VOICE = os.environ.get("JARVIS_VOICE", "Charon")
 MAX_HISTORY = 16
+# Gemini Live drops connections periodically (≈10 min lifetime, GoAway,
+# transient 1011s).  Retry this many times in a row before telling the user.
+MAX_LIVE_RETRIES = 4
 
 app = FastAPI(title="JARVIS Web", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -123,6 +126,15 @@ def system_instruction(session_memory: dict[str, dict[str, str]]) -> str:
 
 
 async def run_tool(name: str, args: dict[str, Any], session_memory: dict[str, dict[str, str]]) -> str:
+    # A failing tool must not tear down the whole voice session.
+    try:
+        return await _run_tool(name, args, session_memory)
+    except Exception:
+        logger.exception("Tool %s failed", name)
+        return "Bu araç şu an çalışmadı, lütfen biraz sonra tekrar dene."
+
+
+async def _run_tool(name: str, args: dict[str, Any], session_memory: dict[str, dict[str, str]]) -> str:
     if name == "get_weather":
         return await asyncio.to_thread(get_weather_summary, str(args.get("location") or ""))
     if name == "get_youtube_channel_report":
@@ -186,7 +198,7 @@ async def answer(message: str, history: list[types.Content], session_memory: dic
     return "İşlemi tamamlamak için çok fazla araç çağrısı oluştu. Lütfen isteğini yeniden ifade et.", contents[-MAX_HISTORY:]
 
 
-def live_config(session_memory: dict[str, dict[str, str]]) -> types.LiveConnectConfig:
+def live_config(session_memory: dict[str, dict[str, str]], resume_handle: str | None = None) -> types.LiveConnectConfig:
     """Use the same native-audio Gemini Live path as the desktop app."""
     return types.LiveConnectConfig(
         response_modalities=["AUDIO"],
@@ -199,48 +211,108 @@ def live_config(session_memory: dict[str, dict[str, str]]) -> types.LiveConnectC
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE)
             )
         ),
+        # The browser streams microphone audio nonstop, so without compression
+        # the session hits the audio context limit after ~15 minutes.
+        context_window_compression=types.ContextWindowCompressionConfig(sliding_window=types.SlidingWindow()),
+        # Lets a dropped connection continue the same conversation.
+        session_resumption=types.SessionResumptionConfig(handle=resume_handle),
     )
 
 
-async def forward_live_responses(session: Any, websocket: WebSocket, session_memory: dict[str, dict[str, str]]) -> None:
-    """Forward Gemini's 24 kHz PCM stream and transcript to the browser."""
+async def forward_live_responses(session: Any, websocket: WebSocket, session_memory: dict[str, dict[str, str]], state: dict[str, Any]) -> None:
+    """Forward Gemini's 24 kHz PCM stream and transcript to the browser.
+
+    Returns when Gemini announces it will close the connection (GoAway) so the
+    caller can reconnect with the latest resumption handle.
+    """
     transcript: list[str] = []
-    async for response in session.receive():
-        server_content = getattr(response, "server_content", None)
-        # LiveServerMessage.data already concatenates every inline audio part
-        # in server_content. Forwarding both it and model_turn.parts duplicates
-        # every PCM frame, which produces overlapping, crackly speech.
-        direct_data = getattr(response, "data", None)
-        audio_chunk = bytes(direct_data) if direct_data else None
-        if server_content:
-            output = getattr(server_content, "output_transcription", None)
-            if output and getattr(output, "text", None):
-                transcript.append(output.text)
-            if getattr(server_content, "interrupted", False):
-                transcript.clear()
-                await websocket.send_json({"type": "interrupt"})
-            if getattr(server_content, "turn_complete", False):
-                text = "".join(transcript).strip()
-                if text:
-                    await websocket.send_json({"type": "reply", "message": text})
-                transcript.clear()
-                await websocket.send_json({"type": "turn_complete"})
+    # session.receive() stops after every turn_complete; without the outer
+    # loop JARVIS goes silent after its first answer.
+    while True:
+        async for response in session.receive():
+            update = getattr(response, "session_resumption_update", None)
+            if update and getattr(update, "resumable", False) and getattr(update, "new_handle", None):
+                state["handle"] = update.new_handle
+            if getattr(response, "go_away", None):
+                return
 
-        if audio_chunk:
-            await websocket.send_json({
-                "type": "audio",
-                "data": base64.b64encode(audio_chunk).decode("ascii"),
-                "sample_rate": 24000,
-            })
+            server_content = getattr(response, "server_content", None)
+            # LiveServerMessage.data already concatenates every inline audio part
+            # in server_content. Forwarding both it and model_turn.parts duplicates
+            # every PCM frame, which produces overlapping, crackly speech.
+            direct_data = getattr(response, "data", None)
+            audio_chunk = bytes(direct_data) if direct_data else None
+            if server_content:
+                output = getattr(server_content, "output_transcription", None)
+                if output and getattr(output, "text", None):
+                    transcript.append(output.text)
+                if getattr(server_content, "interrupted", False):
+                    transcript.clear()
+                    await websocket.send_json({"type": "interrupt"})
+                if getattr(server_content, "turn_complete", False):
+                    text = "".join(transcript).strip()
+                    if text:
+                        await websocket.send_json({"type": "reply", "message": text})
+                    transcript.clear()
+                    await websocket.send_json({"type": "turn_complete"})
 
-        tool_call = getattr(response, "tool_call", None)
-        function_calls = getattr(tool_call, "function_calls", None) or []
-        if function_calls:
-            responses = []
-            for call in function_calls:
-                result = await run_tool(call.name, dict(call.args or {}), session_memory)
-                responses.append(types.FunctionResponse(id=call.id, name=call.name, response={"result": result}))
-            await session.send_tool_response(function_responses=responses)
+            if audio_chunk:
+                await websocket.send_json({
+                    "type": "audio",
+                    "data": base64.b64encode(audio_chunk).decode("ascii"),
+                    "sample_rate": 24000,
+                })
+
+            tool_call = getattr(response, "tool_call", None)
+            function_calls = getattr(tool_call, "function_calls", None) or []
+            if function_calls:
+                responses = []
+                for call in function_calls:
+                    result = await run_tool(call.name, dict(call.args or {}), session_memory)
+                    responses.append(types.FunctionResponse(id=call.id, name=call.name, response={"result": result}))
+                await session.send_tool_response(function_responses=responses)
+
+
+async def read_browser(websocket: WebSocket, inbox: asyncio.Queue[dict[str, Any] | None]) -> None:
+    """Read browser messages for the socket's whole lifetime, across Gemini reconnects."""
+    try:
+        while True:
+            payload = await websocket.receive_json()
+            if isinstance(payload, dict):
+                await inbox.put(payload)
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        await inbox.put(None)
+
+
+async def forward_browser_messages(session: Any, websocket: WebSocket, inbox: asyncio.Queue[dict[str, Any] | None]) -> None:
+    """Send queued browser audio/text to Gemini; returns when the browser leaves."""
+    while (payload := await inbox.get()) is not None:
+        if payload.get("type") == "audio":
+            try:
+                audio = base64.b64decode(str(payload.get("data") or ""), validate=True)
+            except ValueError:
+                continue
+            if audio:
+                await session.send_realtime_input(
+                    audio=types.Blob(data=audio, mime_type="audio/pcm;rate=16000")
+                )
+            continue
+        if payload.get("type") == "audio_end":
+            await session.send_realtime_input(audio_stream_end=True)
+            continue
+        message = str(payload.get("message") or "").strip()
+        if not message:
+            continue
+        if len(message) > 8_000:
+            await websocket.send_json({"type": "error", "message": "Mesaj en fazla 8.000 karakter olabilir."})
+            continue
+        await websocket.send_json({"type": "status", "message": "Thinking"})
+        await session.send_client_content(
+            turns={"role": "user", "parts": [{"text": message}]},
+            turn_complete=True,
+        )
 
 
 @app.get("/", include_in_schema=False)
@@ -262,44 +334,50 @@ async def chat(websocket: WebSocket) -> None:
         await websocket.send_json({"type": "error", "message": "JARVIS yapılandırılmamış: Render Environment bölümünde GEMINI_API_KEY ekleyin."})
         await websocket.close()
         return
+
+    client = genai.Client(api_key=key, http_options={"api_version": "v1alpha"})
+    state: dict[str, Any] = {"handle": None}
+    inbox: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=256)
+    browser = asyncio.create_task(read_browser(websocket, inbox))
+    failures = 0
     try:
-        client = genai.Client(api_key=key, http_options={"api_version": "v1alpha"})
-        async with client.aio.live.connect(model=MODEL, config=live_config(session_memory)) as session:
-            receiver = asyncio.create_task(forward_live_responses(session, websocket, session_memory))
+        while not browser.done() or not inbox.empty():
             try:
-                while True:
-                    payload = await websocket.receive_json()
-                    if payload.get("type") == "audio":
-                        try:
-                            audio = base64.b64decode(str(payload.get("data") or ""), validate=True)
-                        except ValueError:
-                            continue
-                        if audio:
-                            await session.send_realtime_input(
-                                audio=types.Blob(data=audio, mime_type="audio/pcm;rate=16000")
-                            )
-                        continue
-                    if payload.get("type") == "audio_end":
-                        await session.send_realtime_input(audio_stream_end=True)
-                        continue
-                    message = str(payload.get("message") or "").strip()
-                    if not message:
-                        continue
-                    if len(message) > 8_000:
-                        await websocket.send_json({"type": "error", "message": "Mesaj en fazla 8.000 karakter olabilir."})
-                        continue
-                    await websocket.send_json({"type": "status", "message": "Thinking"})
-                    await session.send_client_content(
-                        turns={"role": "user", "parts": [{"text": message}]},
-                        turn_complete=True,
-                    )
-            finally:
-                receiver.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await receiver
-    except WebSocketDisconnect:
-        return
-    except Exception:
-        logger.exception("JARVIS Live session failed")
+                async with client.aio.live.connect(model=MODEL, config=live_config(session_memory, state["handle"])) as session:
+                    failures = 0
+                    receiver = asyncio.create_task(forward_live_responses(session, websocket, session_memory, state))
+                    sender = asyncio.create_task(forward_browser_messages(session, websocket, inbox))
+                    done, pending = await asyncio.wait({receiver, sender}, return_when=asyncio.FIRST_COMPLETED)
+                    for task in pending:
+                        task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
+                            await task
+                    if sender in done and sender.exception() is None:
+                        return  # browser closed the socket
+                    for task in done:
+                        task.result()  # re-raise Gemini errors into the retry path
+                # Clean GoAway: reconnect straight away with the resumption handle.
+                continue
+            except WebSocketDisconnect:
+                return
+            except Exception:
+                failures += 1
+                logger.exception("JARVIS Live session failed (attempt %d/%d)", failures, MAX_LIVE_RETRIES)
+                if browser.done():
+                    return
+                if failures >= MAX_LIVE_RETRIES:
+                    with contextlib.suppress(Exception):
+                        await websocket.send_json({"type": "error", "message": "JARVIS ses çekirdeğine bağlanamadı. Render günlüklerini kontrol edin."})
+                    return
+                if failures > 1:
+                    # A stale resumption handle can be the cause; start fresh.
+                    state["handle"] = None
+                with contextlib.suppress(Exception):
+                    await websocket.send_json({"type": "status", "message": "Yeniden bağlanıyor"})
+                await asyncio.sleep(min(failures, 3))
+    finally:
+        browser.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await browser
         with contextlib.suppress(Exception):
-            await websocket.send_json({"type": "error", "message": "JARVIS ses çekirdeğine bağlanamadı. Render günlüklerini kontrol edin."})
+            await websocket.close()
